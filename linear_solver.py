@@ -1,4 +1,5 @@
 import numpy as np
+from gurobipy import *
 
 
 class LP_slover:
@@ -19,6 +20,8 @@ class LP_slover:
         self.artificial_index = []
         self.m = A.shape[0]
         self.generate_model()
+        self.entering_base_index = []
+        self.rtype = 'SM'
 
     def generate_model(self):
         """
@@ -56,6 +59,8 @@ class LP_slover:
         self.n = self.A.shape[1]  # 有多少个变量
         self.init_B = np.eye(self.m)
         self.B_index = [x for x in range(self.n, self.m + self.n)]
+        self.AI = np.concatenate([self.A, self.init_B], axis=1)
+
 
     def iteration_solve(self, B_):
         """
@@ -63,28 +68,45 @@ class LP_slover:
         :param B_: 当前的B inverse
         :return:
         """
+        print(self.rtype)
         CB = np.array([self.obj[0, x] for x in self.B_index]).reshape(1, -1)  # 基变量价格系数
         # c_x = (self.obj[0, 0:self.n].reshape(1, -1))
-        z = -np.matmul(np.matmul(CB, B_), np.concatenate([self.A, self.init_B], axis=1)) + self.obj
-
+        z = -np.matmul(np.matmul(CB, B_), self.AI) + self.obj
         # z_s = np.matmul(CB, B_)
         # z = np.concatenate([z_x, z_s], axis=1)
         RHS = np.matmul(B_, self.b)
-        if np.max(z) > 0:
+        if 0 in RHS:
+            self.rtype = 'Bland'
+        if np.max(z) > 1e-13:
             # 进基变量
-            pivot_col_index = np.argwhere(z == np.max(z))[0][1]
+            if self.rtype == 'Bland':
+                pivot_col_index = np.argwhere(z > 1e-13)[0][1]  # 如果进基变量重复了，触发Bland Rule 这里还有的会有数值误差
+            else:
+                pivot_col_index = np.argwhere(z == np.max(z))[0][1]
+            # if pivot_col_index in self.entering_base_index:
+            #     self.rtype = 'Bland'
+            # self.entering_base_index.append(pivot_col_index)
+
             # 计算theta
-            pivot_col = np.matmul(B_, self.A[:, pivot_col_index].reshape(-1, 1))
+
+            pivot_col = np.matmul(B_, self.AI[:, pivot_col_index].reshape(-1, 1))
             if np.max(pivot_col) <= 0:
                 flag = 'Unbounded'
                 return RHS, flag
             else:
+                pivot_col = np.where(pivot_col < 0, 0, pivot_col)
                 theta = RHS / pivot_col
                 # 出基变量
-                pivot_row_index = np.argwhere(theta == np.min(np.min(theta[theta > 0])))[0][0]  # 这个是列表的索引，不是变量的索引
+                index_list = np.argwhere(theta == np.min(np.min(theta[theta >= 0])))
+                if len(index_list) == 1:
+                    pivot_row_index = index_list[0][0]  # 这个是列表的索引，不是变量的索引
+                else:
+                    temp = list(np.sum(index_list, axis=1))
+                    pivot_row_index = self.B_index.index(np.min([self.B_index[i] for i in temp]))
                 self.B_index[pivot_row_index] = pivot_col_index
+
                 # 计算下一次迭代的B_
-                A_new = np.matmul(B_, self.A)
+                A_new = np.matmul(B_, self.AI)
                 B_new_ = np.eye(self.m)
                 for i in range(0, self.m):
                     if i == pivot_row_index:
@@ -98,7 +120,7 @@ class LP_slover:
         else:
             if len(np.argwhere(z == 0)) > self.m:
                 flag = 'Optimal Solution Founded but alternative optimum solution'
-            elif 0 in RHS:
+            elif 0 in RHS or self.rtype == 'Bland':
                 flag = 'Optimal Solution Founded but Degenerate optimum solution'
             else:
                 flag = 'Optimal Solution Founded'
@@ -144,7 +166,7 @@ if __name__ == 'main':
     c_obj = np.array([[-5, 6, 13]])
     mtype = 'max'
     model = LP_slover(c_obj, A, b, eq, mtype)
-    x, obj, status = model.solve()
+    model.solve()
     # 测试Big - M法
     A = np.array([[3, 1, 2], [6, 3, 5]])
     b = np.array([[100], [6]])
@@ -152,7 +174,7 @@ if __name__ == 'main':
     c_obj = np.array([[5, 2, 4]])
     mtype = 'min'
     model = LP_slover(c_obj, A, b, eq, mtype)
-    x, obj, status = model.solve()
+    model.solve()
 
     # 测试无穷多最优解
     A = np.array([[-3, 2], [-2, 4]])
@@ -161,4 +183,57 @@ if __name__ == 'main':
     c_obj = np.array([[-2, 4]])
     mtype = 'max'
     model = LP_slover(c_obj, A, b, eq, mtype)
-    x, obj, status = model.solve()
+    model.solve()
+    # 退化解
+    # 1
+    A = np.array([[1, 4], [1, 2]])
+    b = np.array([[8], [4]])
+    eq = ['leq', 'leq']
+    c_obj = np.array([[3, 9]])
+    mtype = 'max'
+    model = LP_slover(c_obj, A, b, eq, mtype)
+    model.solve()
+
+    # 退化解
+    # 2
+    A = np.array([[4, -1], [4, 3], [4, 1]])
+    b = np.array([[8], [12], [8]])
+    eq = ['leq', 'leq', 'leq']
+    c_obj = np.array([[3, 2]])
+    mtype = 'max'
+    model = LP_slover(c_obj, A, b, eq, mtype)
+    model.solve()
+
+    # 退化解
+    # 3
+    A = np.array([[1 / 4, -8, -1, 9], [1 / 2, -12, -1 / 2, 3], [0, 0, 1, 0]])
+    b = np.array([[0], [0], [1]])
+    eq = ['leq', 'leq', 'leq']
+    c_obj = np.array([[3 / 4, -20, 1 / 2, -6]])
+    mtype = 'max'
+    model = LP_slover(c_obj, A, b, eq, mtype)
+    model.solve()
+
+    A = np.array([[1 / 2, -11 / 2, -5 / 2, 9], [1 / 2, -3 / 2, -1 / 2, 1], [1, 0, 0, 0]])
+    b = np.array([[0], [0], [1]])
+    eq = ['leq', 'leq', 'leq']
+    c_obj = np.array([[10, -57, -9, -24]])
+    mtype = 'max'
+    model = LP_slover(c_obj, A, b, eq, mtype)
+    model.solve()
+
+    # gurobi
+    x = list(range(4))
+    c_obj = [3 / 4, -20, 1 / 2, -6]
+    m = Model("loop")
+    x = m.addVars(x, lb=0, vtype=GRB.CONTINUOUS)
+    m.update()
+    m.setObjective(sum(x[i] * c_obj[i] for i in range(0, len(x))),
+                   GRB.MAXIMIZE)
+    b = [0, 0, 1]
+    m.addConstrs(sum(x[j] * A[i, j] for j in range(0, len(x))) <= b[i] for i in range(0, len(b)))
+
+    m.optimize()
+
+    # 输出结果
+    solution = m.getAttr('x', x)
